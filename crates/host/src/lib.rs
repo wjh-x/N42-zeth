@@ -20,15 +20,45 @@ use alloy::{
     providers::{Provider, ext::DebugApi},
 };
 use anyhow::{Context, Result, bail};
-use guests::{DEV_ELF, HOODI_ELF, MAINNET_ELF, SEPOLIA_ELF};
-use reth_chainspec::{ChainSpec, EthChainSpec, NamedChain};
+use guests::{DEV_ELF, HOODI_ELF, MAINNET_ELF, N42_ELF, N42_ETHDEV_ELF, SEPOLIA_ELF};
+use reth_chainspec::NamedChain;
 use reth_ethereum_primitives::TransactionSigned;
 use risc0_zkvm::{
-    Digest, ExecutorEnvBuilder, ProverOpts, Receipt, compute_image_id, default_prover,
+    Digest, ExecutorEnvBuilder, ProverOpts, Receipt, SessionStats, compute_image_id, default_prover,
 };
 use stateless::{ExecutionWitness, UncompressedPublicKey};
-use std::{path::Path, sync::Arc};
+use std::{
+    fmt::{self, Display},
+    path::Path,
+    sync::Arc,
+};
+use zeth_chainspec::{
+    ChainSpec, DEV, HOODI, MAINNET, N42, N42_CHAIN_ID, N42_ETHDEV, N42_ETHDEV_CHAIN_ID, SEPOLIA,
+};
 use zeth_core::Input;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SupportedChain {
+    Mainnet,
+    Sepolia,
+    Hoodi,
+    Dev,
+    N42,
+    N42EthDev,
+}
+
+impl Display for SupportedChain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Mainnet => f.write_str("mainnet"),
+            Self::Sepolia => f.write_str("sepolia"),
+            Self::Hoodi => f.write_str("hoodi"),
+            Self::Dev => f.write_str("dev"),
+            Self::N42 => f.write_str("n42"),
+            Self::N42EthDev => f.write_str("n42-ethdev"),
+        }
+    }
+}
 
 /// Processes Ethereum blocks, including creating inputs, validating, and proving.
 pub struct BlockProcessor<P> {
@@ -36,11 +66,17 @@ pub struct BlockProcessor<P> {
     provider: Arc<P>,
     /// The chain specification.
     chain_spec: Arc<ChainSpec>,
+    /// The selected chain.
+    chain: SupportedChain,
 }
 
 impl<P> Clone for BlockProcessor<P> {
     fn clone(&self) -> Self {
-        Self { provider: Arc::clone(&self.provider), chain_spec: Arc::clone(&self.chain_spec) }
+        Self {
+            provider: Arc::clone(&self.provider),
+            chain_spec: Arc::clone(&self.chain_spec),
+            chain: self.chain,
+        }
     }
 }
 
@@ -51,16 +87,22 @@ impl<P: Provider + DebugApi> BlockProcessor<P> {
     /// specification.
     pub async fn new(provider: P) -> Result<Self> {
         let chain_id = provider.get_chain_id().await.context("eth_chainId failed")?;
-        let chain = chain_id.try_into().context("invalid chain ID")?;
-        let chain_spec = match chain {
-            NamedChain::Mainnet => reth_chainspec::MAINNET.clone(),
-            NamedChain::Sepolia => reth_chainspec::SEPOLIA.clone(),
-            NamedChain::Hoodi => reth_chainspec::HOODI.clone(),
-            NamedChain::AnvilHardhat => reth_chainspec::DEV.clone(),
-            chain => bail!("unsupported chain: {chain}"),
+        let (chain, chain_spec) = if chain_id == N42_CHAIN_ID {
+            (SupportedChain::N42, N42.clone())
+        } else if chain_id == N42_ETHDEV_CHAIN_ID {
+            (SupportedChain::N42EthDev, N42_ETHDEV.clone())
+        } else {
+            let named_chain = chain_id.try_into().context("invalid chain ID")?;
+            match named_chain {
+                NamedChain::Mainnet => (SupportedChain::Mainnet, MAINNET.clone()),
+                NamedChain::Sepolia => (SupportedChain::Sepolia, SEPOLIA.clone()),
+                NamedChain::Hoodi => (SupportedChain::Hoodi, HOODI.clone()),
+                NamedChain::AnvilHardhat => (SupportedChain::Dev, DEV.clone()),
+                chain => bail!("unsupported chain: {chain}"),
+            }
         };
 
-        Ok(Self { provider: provider.into(), chain_spec })
+        Ok(Self { provider: provider.into(), chain_spec, chain })
     }
 
     /// Returns the underlying provider.
@@ -68,20 +110,20 @@ impl<P: Provider + DebugApi> BlockProcessor<P> {
         &self.provider
     }
 
-    /// Returns the named chain identifier.
-    pub fn chain(&self) -> NamedChain {
-        // This unwrap is safe because the constructor ensures a valid named chain.
-        self.chain_spec.chain().named().unwrap()
+    /// Returns the selected chain identifier.
+    pub fn chain(&self) -> SupportedChain {
+        self.chain
     }
 
     /// Returns the guest program ELF and its corresponding image ID for the current chain.
     pub fn elf(&self) -> Result<(&'static [u8], Digest)> {
         let elf = match self.chain() {
-            NamedChain::Mainnet => MAINNET_ELF,
-            NamedChain::Sepolia => SEPOLIA_ELF,
-            NamedChain::Hoodi => HOODI_ELF,
-            NamedChain::AnvilHardhat => DEV_ELF,
-            chain => bail!("unsupported chain for proving: {chain}"),
+            SupportedChain::Mainnet => MAINNET_ELF,
+            SupportedChain::Sepolia => SEPOLIA_ELF,
+            SupportedChain::Hoodi => HOODI_ELF,
+            SupportedChain::Dev => DEV_ELF,
+            SupportedChain::N42 => N42_ELF,
+            SupportedChain::N42EthDev => N42_ETHDEV_ELF,
         };
         let image_id = compute_image_id(elf).context("failed to compute image id")?;
 
@@ -128,7 +170,11 @@ impl<P: Provider + DebugApi> BlockProcessor<P> {
     /// Generates a RISC Zero proof of block execution.
     ///
     /// This method is computationally intensive and is run on a blocking thread.
-    pub async fn prove(&self, input: Input, po2: Option<u32>) -> Result<(Receipt, Digest)> {
+    pub async fn prove(
+        &self,
+        input: Input,
+        po2: Option<u32>,
+    ) -> Result<(Receipt, Digest, SessionStats)> {
         self.prove_with_opts(input, po2, ProverOpts::default()).await
     }
 
@@ -140,7 +186,7 @@ impl<P: Provider + DebugApi> BlockProcessor<P> {
         input: Input,
         po2: Option<u32>,
         opts: ProverOpts,
-    ) -> Result<(Receipt, Digest)> {
+    ) -> Result<(Receipt, Digest, SessionStats)> {
         let (elf, image_id) = self.elf()?;
 
         // prove in a blocking thread using the default prover
@@ -155,7 +201,7 @@ impl<P: Provider + DebugApi> BlockProcessor<P> {
         .await
         .context("prover task panicked")??;
 
-        Ok((info.receipt, image_id))
+        Ok((info.receipt, image_id, info.stats))
     }
 
     /// Gets the input from the filesystem cache, or returns None.

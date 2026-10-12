@@ -22,12 +22,15 @@ use alloy::{
 use anyhow::{Context, bail};
 use clap::Parser;
 use reqwest::Client;
-use reth_chainspec::{DEV, HOODI, MAINNET, NamedChain, SEPOLIA};
+use reth_chainspec::NamedChain;
 use reth_evm_ethereum::EthEvmConfig;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tracing::{debug, error, field, info, instrument};
 use tracing_actix_web::TracingLogger;
+use zeth_chainspec::{
+    ChainSpec, DEV, HOODI, MAINNET, N42, N42_CHAIN_ID, N42_ETHDEV, N42_ETHDEV_CHAIN_ID, SEPOLIA,
+};
 use zeth_rpc_proxy::{PreimageLookup, execution_witness};
 
 /// This struct holds the application state that we want to share across all handlers.
@@ -35,7 +38,7 @@ struct AppState {
     client: Client,
     upstream_url: String,
     provider: DynProvider,
-    evm_config: Arc<EthEvmConfig>,
+    evm_config: Arc<EthEvmConfig<ChainSpec>>,
     lookup: Arc<PreimageLookup>,
 }
 
@@ -218,15 +221,22 @@ async fn main() -> anyhow::Result<()> {
 
     let provider = ProviderBuilder::new().connect_client(client);
     let chain_id = provider.get_chain_id().await.context("eth_chainId failed")?;
-    let chain: NamedChain = chain_id.try_into().context("Invalid chain_id")?;
-    let evm_config = match chain {
-        NamedChain::Mainnet => Arc::new(EthEvmConfig::ethereum(MAINNET.clone())),
-        NamedChain::Hoodi => Arc::new(EthEvmConfig::ethereum(HOODI.clone())),
-        NamedChain::Sepolia => Arc::new(EthEvmConfig::ethereum(SEPOLIA.clone())),
-        NamedChain::AnvilHardhat => Arc::new(EthEvmConfig::ethereum(DEV.clone())),
-        _ => bail!("Unsupported chain: {chain}"),
+    let (chain_name, evm_config) = if chain_id == N42_CHAIN_ID {
+        ("n42".to_string(), Arc::new(EthEvmConfig::ethereum(N42.clone())))
+    } else if chain_id == N42_ETHDEV_CHAIN_ID {
+        ("n42-ethdev".to_string(), Arc::new(EthEvmConfig::ethereum(N42_ETHDEV.clone())))
+    } else {
+        let chain: NamedChain = chain_id.try_into().context("Invalid chain_id")?;
+        let evm_config = match chain {
+            NamedChain::Mainnet => Arc::new(EthEvmConfig::ethereum(MAINNET.clone())),
+            NamedChain::Hoodi => Arc::new(EthEvmConfig::ethereum(HOODI.clone())),
+            NamedChain::Sepolia => Arc::new(EthEvmConfig::ethereum(SEPOLIA.clone())),
+            NamedChain::AnvilHardhat => Arc::new(EthEvmConfig::ethereum(DEV.clone())),
+            _ => bail!("Unsupported chain: {chain}"),
+        };
+        (chain.to_string(), evm_config)
     };
-    info!("EVM config: {}", chain);
+    info!("EVM config: {}", chain_name);
 
     // Initialize the preimage lookup table
     let lookup = Arc::new(PreimageLookup::new(args.preimage_cache_nibbles));

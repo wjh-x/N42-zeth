@@ -38,7 +38,7 @@ async fn prove_with_dev_mode() -> anyhow::Result<()> {
     let (input, block_hash) = processor.create_input(BlockId::latest()).await?;
 
     // prove in dev mode
-    let (receipt, _) =
+    let (receipt, _, _) =
         processor.prove_with_opts(input, None, ProverOpts::default().with_dev_mode(true)).await?;
 
     let proven_hash = B256::try_from(receipt.journal.as_ref())?;

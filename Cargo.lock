@@ -7875,6 +7875,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.23",
+ "zeth-chainspec",
  "zeth-core",
 ]
 
@@ -7918,6 +7919,7 @@ dependencies = [
  "tracing",
  "tracing-actix-web",
  "tracing-subscriber 0.3.23",
+ "zeth-chainspec",
 ]
 
 [[package]]

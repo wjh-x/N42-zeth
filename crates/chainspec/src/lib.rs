@@ -39,6 +39,9 @@ const SEPOLIA_DEPOSIT_CONTRACT_ADDRESS: Address =
 const HOODI_DEPOSIT_CONTRACT_ADDRESS: Address =
     address!("0x00000000219ab540356cBB839Cbe05303d7705Fa");
 
+pub const N42_CHAIN_ID: u64 = 94;
+pub const N42_ETHDEV_CHAIN_ID: u64 = 1337;
+
 /// Ethereum Mainnet specification.
 pub static MAINNET: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
     let spec = ChainSpec {
@@ -92,6 +95,69 @@ pub static DEV: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
     let spec = ChainSpec {
         chain: NamedChain::AnvilHardhat.into(),
         forks: EthereumHardfork::devnet().into(),
+        deposit_contract_address: None,
+        base_fee_params: BaseFeeParams::ethereum(),
+        blob_params: BlobScheduleBlobParams::default(),
+    };
+    spec.into()
+});
+
+/// N42 Ethereum-EL developer chain specification (chain ID 1337).
+///
+/// This matches the executable state transition of `n42 --ethdev`.
+pub static N42_ETHDEV: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
+    let spec = ChainSpec {
+        chain: Chain::from_id(N42_ETHDEV_CHAIN_ID),
+        // N42 ethdev 不发 Ethereum PoW block reward（日志里 rewardCount=0），所以需要
+        // Paris 语义；但当前节点没有维护 Shanghai/Cancun/Prague 的 system contracts，不能
+        // 让 Reth 额外执行 beacon-root/blockhash 等 N42 状态里不存在的系统合约调用。
+        forks: [
+            EthereumHardfork::Frontier,
+            EthereumHardfork::Homestead,
+            EthereumHardfork::Dao,
+            EthereumHardfork::Tangerine,
+            EthereumHardfork::SpuriousDragon,
+            EthereumHardfork::Byzantium,
+            EthereumHardfork::Constantinople,
+            EthereumHardfork::Petersburg,
+            EthereumHardfork::Istanbul,
+            EthereumHardfork::Berlin,
+            EthereumHardfork::London,
+            EthereumHardfork::Paris,
+        ]
+        .into_iter()
+        .map(|fork| (fork, ForkCondition::Block(0)))
+        .collect(),
+        deposit_contract_address: None,
+        base_fee_params: BaseFeeParams::ethereum(),
+        blob_params: BlobScheduleBlobParams::default(),
+    };
+    spec.into()
+});
+
+/// N42 mainnet specification.
+///
+/// N42 exposes EIP-1559 fields from genesis, but the synced blocks observed so far still carry
+/// pre-merge consensus fields such as non-zero difficulty.
+pub static N42: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
+    let spec = ChainSpec {
+        chain: Chain::from_id(N42_CHAIN_ID),
+        forks: [
+            EthereumHardfork::Frontier,
+            EthereumHardfork::Homestead,
+            EthereumHardfork::Dao,
+            EthereumHardfork::Tangerine,
+            EthereumHardfork::SpuriousDragon,
+            EthereumHardfork::Byzantium,
+            EthereumHardfork::Constantinople,
+            EthereumHardfork::Petersburg,
+            EthereumHardfork::Istanbul,
+            EthereumHardfork::Berlin,
+            EthereumHardfork::London,
+        ]
+        .into_iter()
+        .map(|fork| (fork, ForkCondition::Block(0)))
+        .collect(),
         deposit_contract_address: None,
         base_fee_params: BaseFeeParams::ethereum(),
         blob_params: BlobScheduleBlobParams::default(),

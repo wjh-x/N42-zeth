@@ -17,3 +17,10 @@ target
 
 .DS_Store
 /cache/
+
+# Local experiment outputs
+/log/
+/nohup.out
+
+# Internal experiment report
+/ISPA2026_EXPERIMENT_AUDIT_AND_COMPLETION.md
